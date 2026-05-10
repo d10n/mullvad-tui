@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+  "mullvad-tui",
+  "tui-globe",
+]
+# Without this, cargo walks into path-dep crates inside the submodule and
+# tries to resolve their `workspace.*` inheritance against our workspace
+# instead of the upstream one, failing because we don't define every field
+# upstream does (e.g. `[workspace.package].repository`). Excluding the
+# submodule keeps each side responsible for its own workspace fields.
+exclude = ["mullvadvpn-app"]
+
+# Mirrors mullvadvpn-app's per-crate-inheritance pattern: shared fields go in
+# `[workspace.package]` and `[workspace.lints]`; per-crate `Cargo.toml`s opt
+# in via `field.workspace = true`. With one crate today this is mostly
+# scaffolding, but the pattern matches upstream so adding a sibling crate
+# later (e.g. integration-test harness) is one entry in `members` away.
+[workspace.package]
+edition = "2024"
+rust-version = "1.94.0"
+license = "GPL-3.0-or-later"
+
+# A tight subset of upstream's lints: the ones that actually caught real
+# issues in this codebase. Replicating the full upstream list would be churn
+# for marginal value; revisit if a specific lint pays off.
+[workspace.lints.clippy]
+allow_attributes = "warn"
+undocumented_unsafe_blocks = "warn"
+unused_async = "deny"
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+single_use_lifetimes = "warn"
+non_ascii_idents = "forbid"
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = true

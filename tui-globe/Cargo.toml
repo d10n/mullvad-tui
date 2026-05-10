@@ -1,0 +1,27 @@
+[package]
+name = "tui-globe"
+#edition.workspace = true
+edition = "2024"
+rust-version.workspace = true
+description = "Proof-of-concept terminal renderer for the Mullvad 3D globe data"
+#repository.workspace = true
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tui-globe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+crossterm = "0.29"
+ratatui = "0.30.0"
+zstd = { version = "0.13", default-features = false }
+
+[build-dependencies]
+zstd = { version = "0.13", default-features = false }
+
+[lints]
+workspace = true

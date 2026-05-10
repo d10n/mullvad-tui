@@ -1,0 +1,19 @@
+version = 1
+
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "mullvad-tui authors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = ["tui-globe/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "tui-globe authors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = ["tui-globe/assets/**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "https://www.naturalearthdata.com/about/terms-of-use/"
+SPDX-License-Identifier = "CC0-1.0"

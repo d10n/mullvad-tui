@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "25.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          # Resolve the toolchain pinned by rust-toolchain.toml, then install
+          # it explicitly because `rustup toolchain install` without a toolchain arg
+          # ignores --component/--profile.
+          toolchain=$(rustup show active-toolchain | awk '{print $1}')
+          rustup toolchain install "$toolchain" --profile minimal --component clippy
+          # Nightly rustfmt for the format check: rustfmt.toml (symlinked from
+          # mullvadvpn-app/) uses nightly-only options. Scoped to fmt only;
+          # clippy and tests still run on the pinned stable toolchain.
+          rustup toolchain install nightly --profile minimal --component rustfmt
+
+      - name: Cargo fmt
+        run: cargo +nightly fmt -p mullvad-tui -p tui-globe --check
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --all-targets
+
+  reuse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: REUSE compliance check
+        uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0

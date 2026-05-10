@@ -1,0 +1,62 @@
+[package]
+name = "mullvad-tui"
+version = "0.8.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors = ["d10n <david@bitinvert.com>"]
+repository = "https://github.com/d10n/mullvad-tui"
+description = "Terminal user interface for the Mullvad VPN daemon"
+
+[[bin]]
+name = "mullvad-tui"
+path = "src/main.rs"
+
+[package.metadata.deb]
+maintainer = "d10n <david@bitinvert.com>"
+copyright = "Copyright (c) d10n <david@bitinvert.com>"
+license-file = ["../LICENSES/GPL-3.0-or-later.txt", "0"]
+extended-description = """\
+mullvad-tui is a terminal user interface for the Mullvad VPN daemon,
+implementing most of the GUI client's features for headless servers
+and terminal-only workflows. Includes mouse support."""
+section = "net"
+assets = [
+    { source = "target/release/mullvad-tui", dest = "/usr/bin/", mode = "755" },
+    { source = "../README.md", dest = "/usr/share/doc/mullvad-tui/README.md", mode = "644" },
+    { source = "../AUTHORS", dest = "/usr/share/doc/mullvad-tui/AUTHORS", mode = "644" },
+]
+
+[package.metadata.generate-rpm]
+license = "GPL-3.0-or-later"
+assets = [
+    { source = "target/release/mullvad-tui", dest = "/usr/bin/mullvad-tui", mode = "755" },
+    { source = "../README.md", dest = "/usr/share/doc/mullvad-tui/README.md", mode = "644", doc = true },
+    { source = "../AUTHORS", dest = "/usr/share/doc/mullvad-tui/AUTHORS", mode = "644", doc = true },
+    { source = "../LICENSES/GPL-3.0-or-later.txt", dest = "/usr/share/licenses/mullvad-tui/LICENSE", mode = "644" },
+]
+
+[dependencies]
+ansi-to-tui = "8"
+anyhow = "1.0"
+chrono = "0.4.26"
+clap = { version = "4.4.18", features = ["cargo", "derive"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures = "0.3.15"
+indoc = "2"
+mullvad-logging = { path = "../mullvadvpn-app/mullvad-logging" }
+mullvad-management-interface = { path = "../mullvadvpn-app/mullvad-management-interface" }
+mullvad-types = { path = "../mullvadvpn-app/mullvad-types" }
+mullvad-version = { path = "../mullvadvpn-app/mullvad-version" }
+paste = "1"
+ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
+talpid-types = { path = "../mullvadvpn-app/talpid-types" }
+tui-globe = { path = "../tui-globe" }
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+unicode-width = "0.2.2"
+
+[lints]
+workspace = true
