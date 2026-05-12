@@ -74,12 +74,28 @@ jobs:
           cargo generate-rpm -p mullvad-tui \
             --output target/mullvad-tui-${{ steps.version.outputs.version }}-1.x86_64.rpm
 
+      - name: Package static release tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          stage="mullvad-tui-${VERSION}-x86_64-unknown-linux-musl"
+          mkdir -p "target/${stage}"
+          install -m 0755 target/x86_64-unknown-linux-musl/release/mullvad-tui "target/${stage}/mullvad-tui"
+          install -m 0644 LICENSES/GPL-3.0-or-later.txt "target/${stage}/LICENSE"
+          install -m 0644 AUTHORS "target/${stage}/AUTHORS"
+          install -m 0644 README.md "target/${stage}/README.md"
+          tar -C target -czf "target/${stage}.tar.gz" \
+            --owner=0 --group=0 --sort=name \
+            --mtime="@${SOURCE_DATE_EPOCH:-0}" \
+            "${stage}"
+
       - name: Generate build provenance attestations
         id: attest
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: |
-            target/x86_64-unknown-linux-musl/release/mullvad-tui
+            target/*.tar.gz
             target/*.deb
             target/*.rpm
 
@@ -90,10 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp target/*.deb target/*.rpm dist/
-          install -m 0755 \
-            target/x86_64-unknown-linux-musl/release/mullvad-tui \
-            "dist/mullvad-tui-${{ steps.version.outputs.version }}-x86_64-unknown-linux-musl"
+          cp target/*.tar.gz target/*.deb target/*.rpm dist/
           # Include the Sigstore attestation bundle alongside the artifacts.
           cp "$BUNDLE_PATH" "dist/mullvad-tui-${{ steps.version.outputs.version }}.attestation.sigstore.json"
           ( cd dist && sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS . )
