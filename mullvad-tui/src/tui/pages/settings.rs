@@ -886,22 +886,31 @@ fn disconnect_and_quit_label(state: Option<&TunnelState>) -> &'static str {
 }
 
 /// Number of rows the App info block occupies: one header, one URL row,
-/// and one row each for the TUI and daemon versions.
-const APP_INFO_HEIGHT: u16 = 4;
+/// and one row each for the TUI version, the targeted daemon version, and
+/// the running daemon version.
+const APP_INFO_HEIGHT: u16 = 5;
 
 /// Repository URL surfaced in the App info block. Static; no need to
 /// pull from `Cargo.toml` metadata.
 const REPO_URL: &str = "https://github.com/d10n/mullvad-tui";
 
 /// Render the non-focusable App info block at the bottom of the
-/// Settings root: a header line, the GitHub repo URL, and the TUI /
-/// daemon versions on right-aligned value rows. The daemon version
-/// shows `-` until the first `resync` populates it.
+/// Settings root: a header line, the GitHub repo URL, and three
+/// right-aligned version rows. `mullvad-tui` is this binary's own
+/// version; `Targeted daemon` is the upstream daemon release this build
+/// was compiled against (`mullvad_version::VERSION`, the pinned
+/// `mullvadvpn-app` submodule); `mullvad-daemon` is the version the
+/// connected daemon reports and shows `-` until the first `resync`
+/// populates it. When the last two disagree the daemon is a different
+/// release than the one the TUI targets, which is the same mismatch the
+/// startup warning in `tui::run` flags.
 fn render_app_info(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let tui_version = env!("CARGO_PKG_VERSION");
+    let targeted_daemon_version = mullvad_version::VERSION;
     let daemon_version = app.daemon_version().unwrap_or("-");
 
-    let [header_row, url_row, tui_row, daemon_row] = Layout::vertical([
+    let [header_row, url_row, tui_row, targeted_row, daemon_row] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -912,6 +921,12 @@ fn render_app_info(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new("App info"), header_row);
     frame.render_widget(Paragraph::new(REPO_URL), url_row);
     render_app_info_value_row(frame, tui_row, "mullvad-tui", tui_version);
+    render_app_info_value_row(
+        frame,
+        targeted_row,
+        "Targeted daemon",
+        targeted_daemon_version,
+    );
     render_app_info_value_row(frame, daemon_row, "mullvad-daemon", daemon_version);
 }
 
@@ -2049,6 +2064,14 @@ mod tests {
         assert!(
             screen.contains(env!("CARGO_PKG_VERSION")),
             "expected mullvad-tui version, got:\n{screen}",
+        );
+        assert!(
+            screen.contains("Targeted daemon"),
+            "expected targeted daemon row, got:\n{screen}",
+        );
+        assert!(
+            screen.contains(mullvad_version::VERSION),
+            "expected targeted daemon version, got:\n{screen}",
         );
         assert!(
             screen.contains("2026.4"),
