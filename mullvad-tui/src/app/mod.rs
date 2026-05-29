@@ -773,6 +773,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn daita_overrides_entry_only_when_multihop_daita_and_not_direct_only() {
+        use mullvad_types::relay_constraints::{
+            RelayConstraints, RelaySettings, WireguardConstraints,
+        };
+
+        // `use_multihop_if_necessary == true` is the "Direct only OFF"
+        // state - the only one in which DAITA inserts its own entry hop.
+        fn settings(
+            multihop: bool,
+            daita_enabled: bool,
+            use_multihop_if_necessary: bool,
+        ) -> Settings {
+            let mut s = Settings {
+                relay_settings: RelaySettings::Normal(RelayConstraints {
+                    wireguard_constraints: WireguardConstraints {
+                        use_multihop: multihop,
+                        ..WireguardConstraints::default()
+                    },
+                    ..RelayConstraints::default()
+                }),
+                ..Settings::default()
+            };
+            s.tunnel_options.wireguard.daita.enabled = daita_enabled;
+            s.tunnel_options.wireguard.daita.use_multihop_if_necessary = use_multihop_if_necessary;
+            s
+        }
+
+        let mut app = app();
+        assert!(!app.daita_overrides_entry(), "false before settings load");
+
+        app.set_settings(settings(true, true, true));
+        assert!(app.daita_overrides_entry());
+
+        app.set_settings(settings(false, true, true));
+        assert!(!app.daita_overrides_entry(), "needs multihop");
+
+        app.set_settings(settings(true, false, true));
+        assert!(!app.daita_overrides_entry(), "needs DAITA enabled");
+
+        app.set_settings(settings(true, true, false));
+        assert!(
+            !app.daita_overrides_entry(),
+            "Direct only (use_multihop_if_necessary=false) leaves the entry user-controlled"
+        );
+    }
+
     #[tokio::test]
     async fn select_entry_relay_writes_entry_setters() {
         let mut app = app();

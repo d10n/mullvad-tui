@@ -6,6 +6,12 @@
 //! expanded country/city tree and search query don't reset every time
 //! they pop into Status: a country tree with per-country and per-city
 //! expansion toggles.
+//!
+//! When multihop is enabled the page can edit either the entry exit
+//! node (see [`NodeKind`]); the tree expansion and scroll position
+//! are tracked per mode ([`ModeState`]) so switching the
+//! Entry/Exit tab restores each side's own view, while the search query
+//! is shared across both.
 
 use std::{cell::Cell, collections::BTreeSet};
 
@@ -24,8 +30,11 @@ pub enum NodeKind {
     Exit,
 }
 
+/// Per-mode tree-view state: which countries/cities are expanded plus
+/// the scroll bookkeeping. Kept separate for entry vs exit so each tab
+/// restores its own expansion + scroll position on switch.
 #[derive(Debug, Default)]
-pub struct PageState {
+struct ModeState {
     /// Country codes (e.g. `"se"`, `"us"`) currently expanded - their
     /// city rows render below the country row.
     expanded_countries: BTreeSet<String>,
@@ -35,13 +44,6 @@ pub struct PageState {
     /// keep them as an independent set so collapsing a country
     /// doesn't lose the user's per-city expansion preference.
     expanded_cities: BTreeSet<(String, String)>,
-    /// Search/filter query bound to the search-anchor row at the top
-    /// of the page. Empty string means no filter.
-    query: String,
-    /// Which node the page is currently editing. A `Cell` so the
-    /// renderer (holding `&App`/`&PageState`) can coerce it to
-    /// [`NodeKind::Exit`] when multihop is off without a `&mut`.
-    node_mode: Cell<NodeKind>,
     /// First visible tree-row index when the projected list is taller
     /// than the body area. Stored in a `Cell` so the renderer (which
     /// holds `&App`) can adjust it as focus moves through rows that
@@ -61,8 +63,8 @@ pub struct PageState {
     /// the renderer must NOT slide the offset to pull focus back into
     /// view - that's exactly what wheel-scrolling away from the
     /// focused row asks the page to allow. Cleared by
-    /// [`Self::observe_focus_for_scroll`] the next time focus moves,
-    /// so arrow-key navigation resumes the standard "keep focus
+    /// [`PageState::observe_focus_for_scroll`] the next time focus
+    /// moves, so arrow-key navigation resumes the standard "keep focus
     /// visible" behavior on its first keypress.
     user_scrolled: Cell<bool>,
     /// Focused widget id seen by the renderer on the previous frame.
@@ -71,10 +73,26 @@ pub struct PageState {
     /// `user_scrolled`.
     last_focused: Cell<Option<WidgetId>>,
     /// `(rows_len, capacity)` recorded by the renderer on each frame
-    /// so the wheel handler can clamp [`Self::scroll_by`] without
+    /// so the wheel handler can clamp [`PageState::scroll_by`] without
     /// re-projecting the row list. `(0, 0)` means "no frame rendered
     /// yet" - `scroll_by` is a no-op in that state.
     last_dimensions: Cell<(usize, usize)>,
+}
+
+#[derive(Debug, Default)]
+pub struct PageState {
+    /// Tree expansion + scroll for the exit node.
+    exit: ModeState,
+    /// Tree expansion + scroll for the multihop entry node.
+    entry: ModeState,
+    /// Search/filter query bound to the search-anchor row at the top
+    /// of the page. Empty string means no filter. Shared across entry
+    /// and exit modes (mirrors the desktop GUI's global search state).
+    query: String,
+    /// Which node the page is currently editing. A `Cell` so the
+    /// renderer (holding `&App`/`&PageState`) can coerce it to
+    /// [`NodeKind::Exit`] when multihop is off without a `&mut`.
+    node_mode: Cell<NodeKind>,
 }
 
 impl PageState {
@@ -90,12 +108,29 @@ impl PageState {
         self.node_mode.set(mode);
     }
 
+    /// The active mode's tree/scroll state (read).
+    fn active(&self) -> &ModeState {
+        match self.node_mode.get() {
+            NodeKind::Entry => &self.entry,
+            NodeKind::Exit => &self.exit,
+        }
+    }
+
+    /// The active mode's tree/scroll state (mutate).
+    fn active_mut(&mut self) -> &mut ModeState {
+        match self.node_mode.get() {
+            NodeKind::Entry => &mut self.entry,
+            NodeKind::Exit => &mut self.exit,
+        }
+    }
+
     pub fn is_country_expanded(&self, country_code: &str) -> bool {
-        self.expanded_countries.contains(country_code)
+        self.active().expanded_countries.contains(country_code)
     }
 
     pub fn is_city_expanded(&self, country_code: &str, city_code: &str) -> bool {
-        self.expanded_cities
+        self.active()
+            .expanded_cities
             .contains(&(country_code.to_string(), city_code.to_string()))
     }
 
@@ -103,26 +138,30 @@ impl PageState {
     /// when the state actually changed (i.e. the country was previously
     /// collapsed) so callers can skip work on no-ops if they want.
     pub fn expand_country(&mut self, country_code: &str) -> bool {
-        self.expanded_countries.insert(country_code.to_string())
+        self.active_mut()
+            .expanded_countries
+            .insert(country_code.to_string())
     }
 
     /// Mark `country_code` as collapsed. Idempotent. Returns `true`
     /// when the state actually changed.
     pub fn collapse_country(&mut self, country_code: &str) -> bool {
-        self.expanded_countries.remove(country_code)
+        self.active_mut().expanded_countries.remove(country_code)
     }
 
     /// Mark `(country_code, city_code)` as expanded. Idempotent.
     /// Returns `true` when the state actually changed.
     pub fn expand_city(&mut self, country_code: &str, city_code: &str) -> bool {
-        self.expanded_cities
+        self.active_mut()
+            .expanded_cities
             .insert((country_code.to_string(), city_code.to_string()))
     }
 
     /// Mark `(country_code, city_code)` as collapsed. Idempotent.
     /// Returns `true` when the state actually changed.
     pub fn collapse_city(&mut self, country_code: &str, city_code: &str) -> bool {
-        self.expanded_cities
+        self.active_mut()
+            .expanded_cities
             .remove(&(country_code.to_string(), city_code.to_string()))
     }
 
@@ -154,11 +193,11 @@ impl PageState {
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset.get()
+        self.active().scroll_offset.get()
     }
 
     pub fn set_scroll_offset(&self, offset: usize) {
-        self.scroll_offset.set(offset);
+        self.active().scroll_offset.set(offset);
     }
 
     /// Ask the renderer to center the focused tree row on the next
@@ -166,21 +205,21 @@ impl PageState {
     /// their currently-selected location near the middle of the
     /// visible window instead of pinned to the top edge.
     pub fn request_center_focused(&self) {
-        self.center_focused_pending.set(true);
+        self.active().center_focused_pending.set(true);
     }
 
     /// Atomically read-and-clear the center-on-next-render request.
     /// Renderer calls this once per frame; once consumed, the standard
     /// "slide minimally to keep focus in view" behavior resumes.
     pub fn take_center_focused_request(&self) -> bool {
-        self.center_focused_pending.replace(false)
+        self.active().center_focused_pending.replace(false)
     }
 
     /// Record the projected list length and the body's row capacity
     /// from this frame. Lets [`Self::scroll_by`] clamp wheel events
     /// without re-deriving the projection.
     pub fn record_dimensions(&self, rows_len: usize, capacity: usize) {
-        self.last_dimensions.set((rows_len, capacity));
+        self.active().last_dimensions.set((rows_len, capacity));
     }
 
     /// Compare this frame's focused widget against the previous
@@ -190,9 +229,10 @@ impl PageState {
     /// which is what mouse-wheel scrolling produces - the override is
     /// preserved.
     pub fn observe_focus_for_scroll(&self, focused: Option<WidgetId>) {
-        if self.last_focused.get() != focused {
-            self.last_focused.set(focused);
-            self.user_scrolled.set(false);
+        let active = self.active();
+        if active.last_focused.get() != focused {
+            active.last_focused.set(focused);
+            active.user_scrolled.set(false);
         }
     }
 
@@ -201,7 +241,7 @@ impl PageState {
     /// renderer reads this to decide whether to clamp the offset to
     /// the focused row.
     pub fn is_user_scrolled(&self) -> bool {
-        self.user_scrolled.get()
+        self.active().user_scrolled.get()
     }
 
     /// Shift the viewport by `delta` rows (positive = down). Clamps
@@ -213,16 +253,17 @@ impl PageState {
     /// `user_scrolled` so the next render leaves the offset alone
     /// instead of pulling focus back into view.
     pub fn scroll_by(&self, delta: isize) {
-        let (rows_len, capacity) = self.last_dimensions.get();
+        let active = self.active();
+        let (rows_len, capacity) = active.last_dimensions.get();
         if capacity == 0 || rows_len <= capacity {
             return;
         }
         let max_offset = (rows_len - capacity) as isize;
-        let current = self.scroll_offset.get() as isize;
+        let current = active.scroll_offset.get() as isize;
         let new = (current + delta).clamp(0, max_offset) as usize;
-        if new != self.scroll_offset.get() {
-            self.scroll_offset.set(new);
-            self.user_scrolled.set(true);
+        if new != active.scroll_offset.get() {
+            active.scroll_offset.set(new);
+            active.user_scrolled.set(true);
         }
     }
 }
@@ -273,10 +314,40 @@ mod tests {
     }
 
     #[test]
-    fn node_mode_defaults_to_exit_and_is_switchable() {
-        let s = PageState::default();
+    fn expansion_state_is_per_node_mode() {
+        // Entry and exit keep independent expansion: expanding a
+        // country in one mode is invisible in the other, and switching
+        // back restores each mode's own view. Default mode is Exit.
+        let mut s = PageState::default();
         assert_eq!(s.node_mode(), NodeKind::Exit);
+        s.expand_country("se");
+        assert!(s.is_country_expanded("se"));
+
         s.set_node_mode(NodeKind::Entry);
-        assert_eq!(s.node_mode(), NodeKind::Entry);
+        assert!(
+            !s.is_country_expanded("se"),
+            "exit-mode expansion must not leak into entry mode",
+        );
+        s.expand_country("us");
+        assert!(s.is_country_expanded("us"));
+
+        s.set_node_mode(NodeKind::Exit);
+        assert!(s.is_country_expanded("se"), "exit expansion is restored");
+        assert!(
+            !s.is_country_expanded("us"),
+            "entry-mode expansion must not leak into exit mode",
+        );
+    }
+
+    #[test]
+    fn scroll_offset_is_per_node_mode() {
+        let s = PageState::default();
+        s.set_scroll_offset(7);
+        assert_eq!(s.scroll_offset(), 7);
+        s.set_node_mode(NodeKind::Entry);
+        assert_eq!(s.scroll_offset(), 0, "entry mode starts at its own offset");
+        s.set_scroll_offset(3);
+        s.set_node_mode(NodeKind::Exit);
+        assert_eq!(s.scroll_offset(), 7, "exit offset preserved across switch");
     }
 }

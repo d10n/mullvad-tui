@@ -1878,7 +1878,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selecting_in_entry_mode_writes_entry_location() {
+    async fn selecting_in_entry_mode_writes_entry_location_and_flips_to_exit() {
         use crate::app::pages::select_location::NodeKind;
 
         let mut app = app();
@@ -1888,7 +1888,8 @@ mod tests {
         app.select_location_page_state()
             .set_node_mode(NodeKind::Entry);
 
-        // `us` is country idx 1 (alphabetical by code: se, us).
+        // Exit is pinned to `se`, so pick a different country (`us`,
+        // idx 1) as the entry to avoid the cross-exclusion guard.
         let us_radio = crate::app::WidgetId(pages::select_location::COUNTRY_RADIO_BASE + 1);
         pages::select_location::activate(&mut app, &service, us_radio).await;
 
@@ -1902,8 +1903,13 @@ mod tests {
             "the exit setter must not fire in entry mode",
         );
         assert!(
-            !app.is_on_sub_page(),
-            "selecting a node closes the sub-page"
+            app.is_on_sub_page(),
+            "an entry selection keeps the page open"
+        );
+        assert_eq!(
+            app.select_location_page_state().node_mode(),
+            NodeKind::Exit,
+            "after picking an entry the page flips to the Exit tab",
         );
     }
 
@@ -1928,6 +1934,32 @@ mod tests {
         );
         assert!(service.set_entry_country_calls.borrow().is_empty());
         assert!(!app.is_on_sub_page(), "an exit selection closes the page");
+    }
+
+    #[tokio::test]
+    async fn selecting_the_other_nodes_location_is_refused() {
+        use crate::app::pages::select_location::NodeKind;
+
+        let mut app = app();
+        let service = StubService::default();
+        open_select_location_with_relays(&mut app);
+        app.set_settings(multihop_settings(true)); // exit = se
+        app.select_location_page_state()
+            .set_node_mode(NodeKind::Entry);
+
+        // `se` (idx 0) is already the exit; choosing it as the entry
+        // would route in and out the same place, so it's refused.
+        let se_radio = crate::app::WidgetId(pages::select_location::COUNTRY_RADIO_BASE);
+        pages::select_location::activate(&mut app, &service, se_radio).await;
+
+        assert!(
+            service.set_entry_country_calls.borrow().is_empty(),
+            "must not write entry == exit",
+        );
+        assert!(
+            app.is_on_sub_page(),
+            "a refused selection leaves the page open",
+        );
     }
 
     #[tokio::test]

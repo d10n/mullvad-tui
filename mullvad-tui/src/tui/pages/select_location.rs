@@ -38,7 +38,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::{
@@ -49,6 +49,11 @@ use crate::{
     integration::MullvadService,
     tui::{components, error::format_action_error},
 };
+
+/// Notification shown when the user tries to pick, for one multihop
+/// node, the location already chosen for the other node. Entry and exit
+/// must differ - you can't route in and out the same location.
+const SAME_LOCATION_MSG: &str = "Can't use the same location for entry and exit";
 
 mod tree;
 
@@ -174,6 +179,15 @@ fn current_selection_for_mode(app: &App, mode: NodeKind) -> CurrentRelaySelectio
     }
 }
 
+/// The selection of the *other* node - the one that must be excluded
+/// while editing `mode` (can't route in and out the same location).
+fn other_node_selection(app: &App, mode: NodeKind) -> CurrentRelaySelection<'_> {
+    match mode {
+        NodeKind::Entry => app.current_relay_selection(),
+        NodeKind::Exit => app.current_entry_relay_selection(),
+    }
+}
+
 /// Run the action bound to a focused Select-location widget. Static
 /// widgets (search anchor, filter button) and the dynamic per-row
 /// radio ranges are all dispatched here.
@@ -199,7 +213,8 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
             NodeKind::Exit
         };
         app.select_location_page_state().set_node_mode(mode);
-        if !focus_current_selection(app, mode) {
+        let hidden_entry = matches!(mode, NodeKind::Entry) && app.daita_overrides_entry();
+        if hidden_entry || !focus_current_selection(app, mode) {
             app.page_focus_mut().focused = Some(widget);
         }
         return;
@@ -219,16 +234,26 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
     let tree = project_filtered_tree(app);
     let force_expand = filter_active(app);
 
-    // Country radio: select country for the active node (entry or exit).
+    // Country radio: select country (for the active node). Refuse the
+    // selection if it collides with the other node's location.
     if let Some(idx) = country_radio_index(widget) {
         if let Some(country) = tree.get(idx) {
             let code = country.code.to_string();
+            let blocked = app.is_multihop_enabled()
+                && matches!(
+                    other_node_selection(app, mode),
+                    CurrentRelaySelection::Country(c) if c == code.as_str()
+                );
+            if blocked {
+                app.show_notification(SAME_LOCATION_MSG);
+                return;
+            }
             let result = match mode {
                 NodeKind::Entry => app.select_entry_relay_country(service, &code).await,
                 NodeKind::Exit => app.select_relay_country(service, &code).await,
             };
             match result {
-                Ok(()) => app.leave_sub_page(),
+                Ok(()) => after_select_success(app, mode),
                 Err(error) => {
                     app.show_notification(format_action_error("select country", &error));
                 }
@@ -288,12 +313,21 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
         if let Some(&(country_code, _, city_code, ..)) = cities.get(idx) {
             let cc = country_code.to_string();
             let ct = city_code.to_string();
+            let blocked = app.is_multihop_enabled()
+                && matches!(
+                    other_node_selection(app, mode),
+                    CurrentRelaySelection::City { city, .. } if city == ct.as_str()
+                );
+            if blocked {
+                app.show_notification(SAME_LOCATION_MSG);
+                return;
+            }
             let result = match mode {
                 NodeKind::Entry => app.select_entry_relay_city(service, &cc, &ct).await,
                 NodeKind::Exit => app.select_relay_city(service, &cc, &ct).await,
             };
             match result {
-                Ok(()) => app.leave_sub_page(),
+                Ok(()) => after_select_success(app, mode),
                 Err(error) => {
                     app.show_notification(format_action_error("select city", &error));
                 }
@@ -356,15 +390,43 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
         // to take `&mut app` next.
         drop(tree);
         if let Some(host) = host {
+            let blocked = app.is_multihop_enabled()
+                && matches!(
+                    other_node_selection(app, mode),
+                    CurrentRelaySelection::Hostname(h) if h == host.as_str()
+                );
+            if blocked {
+                app.show_notification(SAME_LOCATION_MSG);
+                return;
+            }
             let result = match mode {
                 NodeKind::Entry => app.select_entry_relay(service, &host).await,
                 NodeKind::Exit => app.select_relay(service, &host).await,
             };
             match result {
-                Ok(()) => app.leave_sub_page(),
+                Ok(()) => after_select_success(app, mode),
                 Err(error) => {
                     app.show_notification(format_action_error("select relay", &error));
                 }
+            }
+        }
+    }
+}
+
+/// After a successful selection, decide what happens to the page. An
+/// exit selection closes the sub-page (today's behavior). An entry
+/// selection keeps the page open and flips to the Exit tab so the
+/// user can pick the exit next, mirroring the desktop GUI's
+/// entry->exit flow; focus lands on the exit's current selection
+/// (or the Exit tab when there's nothing to focus).
+fn after_select_success(app: &mut App, mode: NodeKind) {
+    match mode {
+        NodeKind::Exit => app.leave_sub_page(),
+        NodeKind::Entry => {
+            app.select_location_page_state()
+                .set_node_mode(NodeKind::Exit);
+            if !focus_current_selection(app, NodeKind::Exit) {
+                app.page_focus_mut().focused = Some(widgets::EXIT_TAB);
             }
         }
     }
@@ -589,10 +651,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, registry: &mut Focus
         area
     };
 
+    // DAITA override guard: in Entry mode the daemon may insert its own
+    // entry hop, overriding any configured entry, so an entry list would
+    // be misleading. Show an explanation and register no tree rows; the
+    // Entry/Exit tabs above stay focusable so the user can switch back.
+    if matches!(mode, NodeKind::Entry) && app.daita_overrides_entry() {
+        render_daita_override_message(frame, body);
+        return;
+    }
+
     let tree = project_filtered_tree(app);
     let force_expand = filter_active(app);
-    // Highlight the active node's current selection.
+    // Highlight the active node's selection; dim the other node's
+    // selection as non-selectable (only meaningful under multihop).
     let selection = current_selection_for_mode(app, mode);
+    let disabled = multihop.then(|| other_node_selection(app, mode));
     let page_state = app.select_location_page_state();
 
     // Top: search anchor (filling) + [Filter] button.
@@ -678,7 +751,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, registry: &mut Focus
             (off_screen, false)
         };
         if draw_visible {
-            render_tree_row_visual(frame, rect, row, &selection, focused);
+            render_tree_row_visual(frame, rect, row, &selection, disabled.as_ref(), focused);
         }
         register_tree_row_focus(registry, row, rect);
     }
@@ -1071,6 +1144,7 @@ fn render_tree_row_visual(
     area: Rect,
     row: &TreeRow<'_>,
     selection: &CurrentRelaySelection<'_>,
+    disabled: Option<&CurrentRelaySelection<'_>>,
     focused: Option<WidgetId>,
 ) {
     match row.kind {
@@ -1080,6 +1154,10 @@ fn render_tree_row_visual(
             expanded,
         } => {
             let selected = matches!(selection, CurrentRelaySelection::Country(c) if *c == code);
+            // Dimmed (cross-exclusion): this is the other node's
+            // chosen location, which can't double as this node's.
+            let dimmed = disabled
+                .is_some_and(|d| matches!(d, CurrentRelaySelection::Country(c) if *c == code));
             render_radio_with_chevron_glyph(
                 frame,
                 area,
@@ -1087,6 +1165,7 @@ fn render_tree_row_visual(
                 0,
                 name,
                 selected,
+                dimmed,
                 expanded,
                 row_id_or_none(row.index, COUNTRY_MAX, COUNTRY_RADIO_BASE),
                 focused,
@@ -1102,6 +1181,9 @@ fn render_tree_row_visual(
                 selection,
                 CurrentRelaySelection::City { city, .. } if *city == code
             );
+            let dimmed = disabled.is_some_and(
+                |d| matches!(d, CurrentRelaySelection::City { city, .. } if *city == code),
+            );
             render_radio_with_chevron_glyph(
                 frame,
                 area,
@@ -1109,6 +1191,7 @@ fn render_tree_row_visual(
                 2,
                 name,
                 selected,
+                dimmed,
                 expanded,
                 row_id_or_none(row.index, CITY_MAX, CITY_RADIO_BASE),
                 focused,
@@ -1119,11 +1202,14 @@ fn render_tree_row_visual(
                 selection,
                 CurrentRelaySelection::Hostname(h) if *h == hostname
             );
+            let dimmed = disabled
+                .is_some_and(|d| matches!(d, CurrentRelaySelection::Hostname(h) if *h == hostname));
             render_relay_row_visual(
                 frame,
                 area,
                 hostname,
                 selected,
+                dimmed,
                 row_id_or_none(row.index, RELAY_MAX, RELAY_RADIO_BASE),
                 focused,
             );
@@ -1205,6 +1291,7 @@ fn render_radio_with_chevron_glyph(
     indent: u16,
     label: &str,
     radio_selected: bool,
+    dimmed: bool,
     expanded: bool,
     radio_id: Option<WidgetId>,
     focused: Option<WidgetId>,
@@ -1237,7 +1324,11 @@ fn render_radio_with_chevron_glyph(
         indent = indent as usize,
     );
     let radio_style = if radio_id.is_some() && focused == radio_id {
+        // Focus wins over the dim so the user can still see where they
+        // are while navigating through a non-selectable row.
         Style::new().yellow()
+    } else if dimmed {
+        Style::new().dark_gray()
     } else {
         Style::new()
     };
@@ -1252,6 +1343,7 @@ fn render_relay_row_visual(
     area: Rect,
     hostname: &str,
     selected: bool,
+    dimmed: bool,
     id: Option<WidgetId>,
     focused: Option<WidgetId>,
 ) {
@@ -1261,7 +1353,11 @@ fn render_relay_row_visual(
     // Indented 4ch. Whole-row focusable.
     let text = format!("    {} {hostname}", components::radio_glyph(selected));
     let style = if id.is_some() && focused == id {
+        // Focus wins over the dim so a non-selectable row still shows
+        // where the cursor is.
         Style::new().yellow()
+    } else if dimmed {
+        Style::new().dark_gray()
     } else {
         Style::new()
     };
@@ -1341,6 +1437,21 @@ fn render_mode_tab(
         rect: area,
         kind: FocusKind::Button,
     });
+}
+
+/// Replaces the entry list when DAITA is overriding the multihop entry
+/// node. There's nothing to select, so explain why and point the user
+/// at the DAITA settings. Registers no focusables - the Entry/Exit tabs
+/// above remain the way back.
+fn render_daita_override_message(frame: &mut Frame<'_>, area: Rect) {
+    let text = "The multihop entry server is currently chosen by DAITA. To pick an entry \
+                location, enable \"Direct only\" or disable DAITA in Settings.";
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .style(Style::new().dark_gray()),
+        area,
+    );
 }
 
 /// Search-anchor + filter-button row. The anchor is a focusable
@@ -1556,6 +1667,30 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("[Entry]") && l.contains("[Exit]")),
             "Entry/Exit tabs appear when multihop is on",
+        );
+    }
+
+    #[test]
+    fn entry_mode_renders_daita_override_message_without_a_tree() {
+        let mut app = test_app_with_relays();
+        app.set_settings(settings_multihop_daita(true, true));
+        app.select_location_page_state()
+            .set_node_mode(super::NodeKind::Entry);
+
+        let lines = render_screen(&app, 60, 20);
+        assert!(
+            lines.iter().any(|l| l.contains("DAITA")),
+            "Entry tab shows the DAITA-override message",
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("Sweden")),
+            "the entry tree is hidden while DAITA overrides the entry",
+        );
+        // The tabs are still present so the user can switch back to Exit.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("[Entry]") && l.contains("[Exit]")),
         );
     }
 

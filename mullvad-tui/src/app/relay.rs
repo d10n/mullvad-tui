@@ -115,6 +115,21 @@ impl App {
         }
     }
 
+    /// True when DAITA is forcing the multihop entry node, making a
+    /// user-chosen `entry_location` a no-op. Happens when multihop is on,
+    /// DAITA is enabled, and DAITA's `use_multihop_if_necessary` is set (i.e.
+    /// "Direct only" is off): in that mode the daemon may insert its own
+    /// entry hop, overriding the configured entry. The relay-selector page
+    /// reads this to show an explanatory message instead of an entry list
+    /// (mirrors the desktop GUI's `showDisabledEntrySelection`).
+    pub fn daita_overrides_entry(&self) -> bool {
+        self.is_multihop_enabled()
+            && self.settings.as_ref().is_some_and(|s| {
+                let daita = &s.tunnel_options.wireguard.daita;
+                daita.enabled && daita.use_multihop_if_necessary
+            })
+    }
+
     /// Set the port for a specific obfuscation mode (without changing the
     /// currently selected mode). `port = None` means `Constraint::Any` -
     /// daemon picks. Returns `Validation` for modes that have no port (Off,
