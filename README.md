@@ -11,6 +11,15 @@ The mullvad daemon protocol may drift across versions, and the mullvad Rust API 
 ## Installation
 Download the latest release from the [releases page](https://github.com/d10n/mullvad-tui/releases).
 
+Currently published packages:
+* `rpm` file for Fedora/RHEL
+* `deb` file for Debian/Ubuntu
+* `tar.gz` file with a statically-linked binary for any other Linux distro
+
+For Arch Linux, there are AUR packages:
+* `mullvad-vpn`
+* `mullvad-vpn-bin`
+
 ## Compiling from Source
 
 ### Clone
