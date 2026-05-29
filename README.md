@@ -30,20 +30,13 @@ cargo build
 
 The binary output is at `target/debug/mullvad-tui`.
 
-### Static build (musl)
+### Static build
 
 ```bash
-# One-time setup
-rustup target add x86_64-unknown-linux-musl
-sudo pacman -S musl             # Arch
-sudo dnf install musl-gcc       # Fedora
-sudo apt-get install musl-tools # Debian/Ubuntu
-
-# Build
-cargo build --release -p mullvad-tui --target x86_64-unknown-linux-musl
+make static
 ```
 
-The static binary output is at `target/x86_64-unknown-linux-musl/release/mullvad-tui`.
+The static binary output is at `target/crt-static/x86_64-unknown-linux-gnu/release/mullvad-tui`.
 
 ## Development
 

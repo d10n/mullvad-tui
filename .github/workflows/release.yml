@@ -33,14 +33,11 @@ jobs:
           version: "25.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       - name: Install Rust toolchain
         shell: bash
         run: |
           toolchain=$(rustup show active-toolchain | awk '{print $1}')
-          rustup toolchain install "$toolchain" --profile minimal --target x86_64-unknown-linux-musl
+          rustup toolchain install "$toolchain" --profile minimal
 
       - name: Cache cargo
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -49,15 +46,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release binary
         run: cargo build --release -p mullvad-tui --locked
 
       - name: Build statically linked release binary
         env:
-          CC: musl-gcc
-        run: cargo build --release -p mullvad-tui --target x86_64-unknown-linux-musl --locked
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build --release -p mullvad-tui --locked --target x86_64-unknown-linux-gnu --target-dir target/crt-static
 
       - name: Install packagers
         run: |
@@ -79,9 +76,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          stage="mullvad-tui-${VERSION}-x86_64-unknown-linux-musl"
+          stage="mullvad-tui-${VERSION}-x86_64-unknown-linux-gnu"
           mkdir -p "target/${stage}"
-          install -m 0755 target/x86_64-unknown-linux-musl/release/mullvad-tui "target/${stage}/mullvad-tui"
+          install -m 0755 target/crt-static/x86_64-unknown-linux-gnu/release/mullvad-tui "target/${stage}/mullvad-tui"
           install -m 0644 LICENSES/GPL-3.0-or-later.txt "target/${stage}/LICENSE"
           install -m 0644 AUTHORS "target/${stage}/AUTHORS"
           install -m 0644 README.md "target/${stage}/README.md"

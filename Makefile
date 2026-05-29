@@ -33,11 +33,13 @@ license-check:
 	fi
 	reuse lint
 
-# The musl std component is provisioned on demand - `rustup target add` is
-# idempotent, so re-runs are a no-op once the target is installed.
+# Static release build via `+crt-static` on the default GNU target.
+# The CARGO_TARGET_..._RUSTFLAGS env var scopes the flag to the final binary;
+# bare RUSTFLAGS would also apply to host-side proc-macros, which must remain
+# dynamic libs.
 static:
-	@rustup target add x86_64-unknown-linux-musl >/dev/null
-	cargo build --release -p mullvad-tui --target x86_64-unknown-linux-musl
+	CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+crt-static" \
+		cargo build --release -p mullvad-tui --target x86_64-unknown-linux-gnu --target-dir target/crt-static
 
 clean:
 	cargo clean
