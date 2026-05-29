@@ -34,7 +34,7 @@ jobs:
           rustup toolchain install nightly --profile minimal --component rustfmt
 
       - name: Cargo fmt
-        run: cargo +nightly fmt -p mullvad-tui -p tui-globe --check
+        run: cargo +nightly fmt -p mullvad-tui --check
 
       - name: Cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings

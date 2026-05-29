@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
   "mullvad-tui",
-  "tui-globe",
 ]
 # Without this, cargo walks into path-dep crates inside the submodule and
 # tries to resolve their `workspace.*` inheritance against our workspace

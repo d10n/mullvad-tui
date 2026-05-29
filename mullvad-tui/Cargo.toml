@@ -51,11 +51,11 @@ mullvad-version = { path = "../mullvadvpn-app/mullvad-version" }
 paste = "1"
 ratatui = { version = "0.30.0", features = ["unstable-rendered-line-info"] }
 talpid-types = { path = "../mullvadvpn-app/talpid-types" }
-tui-globe = { path = "../tui-globe" }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tui-globe = "1.0.0"
 unicode-width = "0.2.2"
 
 [lints]
