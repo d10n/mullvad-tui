@@ -200,6 +200,20 @@ pub trait MullvadService {
         country_code: &str,
         city_code: &str,
     ) -> Result<(), IntegrationError>;
+    /// Multihop entry node sibling of [`Self::set_relay_location`]: writes
+    /// `wireguard_constraints.entry_location` (the daemon's separate entry
+    /// constraint) by hostname, rather than the exit `location`. Only takes
+    /// effect when multihop is enabled. Used by the relay-selector page when
+    /// it is in `Entry` mode.
+    async fn set_entry_location(&self, location: &str) -> Result<(), IntegrationError>;
+    /// Country-level sibling of [`Self::set_entry_location`].
+    async fn set_entry_country(&self, country_code: &str) -> Result<(), IntegrationError>;
+    /// City-level sibling of [`Self::set_entry_location`].
+    async fn set_entry_city(
+        &self,
+        country_code: &str,
+        city_code: &str,
+    ) -> Result<(), IntegrationError>;
     /// Toggle the daemon's `wireguard_constraints.use_multihop` flag.
     async fn set_multihop_enabled(&self, enabled: bool) -> Result<(), IntegrationError>;
     /// Set the daemon's `wireguard_constraints.ip_version` constraint.

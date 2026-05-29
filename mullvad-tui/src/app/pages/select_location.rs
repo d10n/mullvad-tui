@@ -11,6 +11,19 @@ use std::{cell::Cell, collections::BTreeSet};
 
 use crate::app::WidgetId;
 
+/// Which node the relay-selector page is currently editing. Only
+/// meaningful when multihop is enabled; with multihop off the page is
+/// always editing the exit node (see the renderer's "effective mode").
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum NodeKind {
+    /// The multihop entry node (`wireguard_constraints.entry_location`).
+    Entry,
+    /// The exit node (`relay_constraints.location`). Default and the
+    /// only selectable node when multihop is off.
+    #[default]
+    Exit,
+}
+
 #[derive(Debug, Default)]
 pub struct PageState {
     /// Country codes (e.g. `"se"`, `"us"`) currently expanded - their
@@ -25,6 +38,10 @@ pub struct PageState {
     /// Search/filter query bound to the search-anchor row at the top
     /// of the page. Empty string means no filter.
     query: String,
+    /// Which node the page is currently editing. A `Cell` so the
+    /// renderer (holding `&App`/`&PageState`) can coerce it to
+    /// [`NodeKind::Exit`] when multihop is off without a `&mut`.
+    node_mode: Cell<NodeKind>,
     /// First visible tree-row index when the projected list is taller
     /// than the body area. Stored in a `Cell` so the renderer (which
     /// holds `&App`) can adjust it as focus moves through rows that
@@ -61,6 +78,18 @@ pub struct PageState {
 }
 
 impl PageState {
+    /// Which node the page is currently editing.
+    pub fn node_mode(&self) -> NodeKind {
+        self.node_mode.get()
+    }
+
+    /// Switch the page to editing `mode`. Interior mutability (`Cell`)
+    /// so both the `&mut App` activation path and the `&App` renderer's
+    /// multihop-off coercion can call it.
+    pub fn set_node_mode(&self, mode: NodeKind) {
+        self.node_mode.set(mode);
+    }
+
     pub fn is_country_expanded(&self, country_code: &str) -> bool {
         self.expanded_countries.contains(country_code)
     }
@@ -241,5 +270,13 @@ mod tests {
         assert!(s.is_city_expanded("se", "got"));
         // Same city code in different country -> different key.
         assert!(!s.is_city_expanded("us", "got"));
+    }
+
+    #[test]
+    fn node_mode_defaults_to_exit_and_is_switchable() {
+        let s = PageState::default();
+        assert_eq!(s.node_mode(), NodeKind::Exit);
+        s.set_node_mode(NodeKind::Entry);
+        assert_eq!(s.node_mode(), NodeKind::Entry);
     }
 }

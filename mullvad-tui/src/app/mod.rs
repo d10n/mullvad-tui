@@ -700,6 +700,112 @@ mod tests {
         );
     }
 
+    #[test]
+    fn current_entry_relay_selection_projects_entry_location() {
+        use mullvad_types::{
+            constraints::Constraint,
+            relay_constraints::{
+                GeographicLocationConstraint, LocationConstraint, RelayConstraints, RelaySettings,
+                WireguardConstraints,
+            },
+        };
+
+        // Build `Settings` whose multihop `entry_location` is `entry`;
+        // only that field affects `current_entry_relay_selection`.
+        fn settings_with_entry(entry: Constraint<LocationConstraint>) -> Settings {
+            Settings {
+                relay_settings: RelaySettings::Normal(RelayConstraints {
+                    wireguard_constraints: WireguardConstraints {
+                        entry_location: entry,
+                        ..WireguardConstraints::default()
+                    },
+                    ..RelayConstraints::default()
+                }),
+                ..Settings::default()
+            }
+        }
+
+        let mut app = app();
+        // Unknown before settings prime, just like the exit projection.
+        assert_eq!(
+            app.current_entry_relay_selection(),
+            super::CurrentRelaySelection::Unknown
+        );
+
+        app.set_settings(settings_with_entry(Constraint::Any));
+        assert_eq!(
+            app.current_entry_relay_selection(),
+            super::CurrentRelaySelection::Any
+        );
+
+        app.set_settings(settings_with_entry(Constraint::Only(
+            LocationConstraint::Location(GeographicLocationConstraint::Country("se".to_string())),
+        )));
+        assert_eq!(
+            app.current_entry_relay_selection(),
+            super::CurrentRelaySelection::Country("se")
+        );
+
+        app.set_settings(settings_with_entry(Constraint::Only(
+            LocationConstraint::Location(GeographicLocationConstraint::City(
+                "se".to_string(),
+                "got".to_string(),
+            )),
+        )));
+        assert_eq!(
+            app.current_entry_relay_selection(),
+            super::CurrentRelaySelection::City {
+                country: "se",
+                city: "got"
+            }
+        );
+
+        app.set_settings(settings_with_entry(Constraint::Only(
+            LocationConstraint::Location(GeographicLocationConstraint::Hostname(
+                "se".to_string(),
+                "got".to_string(),
+                "se-got-wg-001".to_string(),
+            )),
+        )));
+        assert_eq!(
+            app.current_entry_relay_selection(),
+            super::CurrentRelaySelection::Hostname("se-got-wg-001")
+        );
+    }
+
+    #[tokio::test]
+    async fn select_entry_relay_writes_entry_setters() {
+        let mut app = app();
+        let service = StubService::default();
+
+        app.select_entry_relay(&service, "se-got-wg-001")
+            .await
+            .expect("entry hostname ok");
+        app.select_entry_relay_country(&service, "se")
+            .await
+            .expect("entry country ok");
+        app.select_entry_relay_city(&service, "se", "got")
+            .await
+            .expect("entry city ok");
+
+        assert_eq!(
+            service.set_entry_calls.borrow().as_slice(),
+            &["se-got-wg-001".to_string()]
+        );
+        assert_eq!(
+            service.set_entry_country_calls.borrow().as_slice(),
+            &["se".to_string()]
+        );
+        assert_eq!(
+            service.set_entry_city_calls.borrow().as_slice(),
+            &[("se".to_string(), "got".to_string())]
+        );
+        // The exit setters must stay untouched.
+        assert!(service.set_relay_calls.borrow().is_empty());
+        assert!(service.set_relay_country_calls.borrow().is_empty());
+        assert!(service.set_relay_city_calls.borrow().is_empty());
+    }
+
     #[tokio::test]
     async fn select_relay_sets_specific_location() {
         let mut app = app();

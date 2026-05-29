@@ -29,6 +29,9 @@ pub(crate) struct StubService {
     pub set_relay_calls: RefCell<Vec<String>>,
     pub set_relay_country_calls: RefCell<Vec<String>>,
     pub set_relay_city_calls: RefCell<Vec<(String, String)>>,
+    pub set_entry_calls: RefCell<Vec<String>>,
+    pub set_entry_country_calls: RefCell<Vec<String>>,
+    pub set_entry_city_calls: RefCell<Vec<(String, String)>>,
     pub set_multihop_calls: RefCell<Vec<bool>>,
     pub set_ip_version_preference_calls: RefCell<Vec<Option<talpid_types::net::IpVersion>>>,
     pub set_lan_calls: RefCell<Vec<bool>>,
@@ -78,6 +81,9 @@ impl Default for StubService {
             set_relay_calls: RefCell::default(),
             set_relay_country_calls: RefCell::default(),
             set_relay_city_calls: RefCell::default(),
+            set_entry_calls: RefCell::default(),
+            set_entry_country_calls: RefCell::default(),
+            set_entry_city_calls: RefCell::default(),
             set_multihop_calls: RefCell::default(),
             set_ip_version_preference_calls: RefCell::default(),
             set_lan_calls: RefCell::default(),
@@ -211,6 +217,29 @@ impl MullvadService for StubService {
         city_code: &str,
     ) -> Result<(), IntegrationError> {
         self.set_relay_city_calls
+            .borrow_mut()
+            .push((country_code.to_string(), city_code.to_string()));
+        Ok(())
+    }
+
+    async fn set_entry_location(&self, location: &str) -> Result<(), IntegrationError> {
+        self.set_entry_calls.borrow_mut().push(location.to_string());
+        Ok(())
+    }
+
+    async fn set_entry_country(&self, country_code: &str) -> Result<(), IntegrationError> {
+        self.set_entry_country_calls
+            .borrow_mut()
+            .push(country_code.to_string());
+        Ok(())
+    }
+
+    async fn set_entry_city(
+        &self,
+        country_code: &str,
+        city_code: &str,
+    ) -> Result<(), IntegrationError> {
+        self.set_entry_city_calls
             .borrow_mut()
             .push((country_code.to_string(), city_code.to_string()));
         Ok(())

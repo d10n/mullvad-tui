@@ -88,6 +88,23 @@ impl App {
         location_to_selection(&constraints.location)
     }
 
+    /// What the daemon currently has configured as its multihop entry node
+    /// constraint, projected from cached
+    /// `wireguard_constraints.entry_location`. Mirrors
+    /// [`Self::current_relay_selection`] (which reads the exit `location`).
+    /// `Unknown` until settings load; `CustomTunnel` for a custom tunnel
+    /// endpoint (which carries no entry constraint).
+    pub fn current_entry_relay_selection(&self) -> CurrentRelaySelection<'_> {
+        let Some(settings) = self.settings.as_ref() else {
+            return CurrentRelaySelection::Unknown;
+        };
+        let constraints = match &settings.relay_settings {
+            RelaySettings::CustomTunnelEndpoint(_) => return CurrentRelaySelection::CustomTunnel,
+            RelaySettings::Normal(constraints) => constraints,
+        };
+        location_to_selection(&constraints.wireguard_constraints.entry_location)
+    }
+
     /// True if the daemon has multihop enabled in cached `Settings`. False
     /// when settings are unloaded or the relay config is `CustomTunnelEndpoint`
     /// (multihop only applies to `Normal` constraints).
@@ -207,6 +224,49 @@ impl App {
         let cit = city_code.to_string();
         self.start_settings_push_op(Operation::SelectRelayCity, async move || {
             service.set_relay_city(&cc, &cit).await
+        })
+        .await
+    }
+
+    /// Multihop entry node sibling of [`Self::select_relay`]: writes
+    /// `wireguard_constraints.entry_location` by hostname. Only meaningful
+    /// when multihop is enabled. Two-stage via Settings push.
+    pub async fn select_entry_relay<S: MullvadService>(
+        &mut self,
+        service: &S,
+        relay_label: &str,
+    ) -> Result<(), IntegrationError> {
+        let label = relay_label.to_string();
+        self.start_settings_push_op(Operation::SelectEntryRelay, async move || {
+            service.set_entry_location(&label).await
+        })
+        .await
+    }
+
+    /// Country-level sibling of [`Self::select_entry_relay`].
+    pub async fn select_entry_relay_country<S: MullvadService>(
+        &mut self,
+        service: &S,
+        country_code: &str,
+    ) -> Result<(), IntegrationError> {
+        let code = country_code.to_string();
+        self.start_settings_push_op(Operation::SelectEntryRelayCountry, async move || {
+            service.set_entry_country(&code).await
+        })
+        .await
+    }
+
+    /// City-level sibling of [`Self::select_entry_relay`].
+    pub async fn select_entry_relay_city<S: MullvadService>(
+        &mut self,
+        service: &S,
+        country_code: &str,
+        city_code: &str,
+    ) -> Result<(), IntegrationError> {
+        let cc = country_code.to_string();
+        let cit = city_code.to_string();
+        self.start_settings_push_op(Operation::SelectEntryRelayCity, async move || {
+            service.set_entry_city(&cc, &cit).await
         })
         .await
     }

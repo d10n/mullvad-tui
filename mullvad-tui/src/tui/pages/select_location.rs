@@ -36,7 +36,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -44,6 +44,7 @@ use ratatui::{
 use crate::{
     app::{
         App, ArrowDir, CurrentRelaySelection, FocusKind, FocusRegistry, FocusableWidget, WidgetId,
+        pages::select_location::NodeKind,
     },
     integration::MullvadService,
     tui::{components, error::format_action_error},
@@ -89,6 +90,13 @@ pub mod widgets {
     /// `[Filter]` button right of the search anchor. Targets the
     /// `Status > Select location > Filter` sub-page.
     pub const FILTER_BUTTON: WidgetId = WidgetId(SELECT_LOCATION_BASE + 1);
+    /// `[Entry]` tab of the Entry/Exit segmented control. Only rendered
+    /// when multihop is enabled; switches the page to editing the
+    /// multihop entry node.
+    pub const ENTRY_TAB: WidgetId = WidgetId(SELECT_LOCATION_BASE + 2);
+    /// `[Exit]` tab of the Entry/Exit segmented control. Switches the
+    /// page back to editing the exit node.
+    pub const EXIT_TAB: WidgetId = WidgetId(SELECT_LOCATION_BASE + 3);
 }
 
 // ---- Widget id decoders ----
@@ -128,9 +136,42 @@ fn decode(widget: WidgetId, base: u32, max: u32) -> Option<usize> {
 pub fn owns_widget(widget: WidgetId) -> bool {
     widget == widgets::SEARCH_ANCHOR
         || widget == widgets::FILTER_BUTTON
+        || widget == widgets::ENTRY_TAB
+        || widget == widgets::EXIT_TAB
         || owns_tree_row(widget)
         || country_chevron_index(widget).is_some()
         || city_chevron_index(widget).is_some()
+}
+
+/// The node the page is effectively editing. With multihop off, entry
+/// selection is meaningless, so the page is always editing the exit
+/// node regardless of any stale `node_mode` left from a prior
+/// multihop-on visit.
+fn effective_mode(app: &App) -> NodeKind {
+    if app.is_multihop_enabled() {
+        app.select_location_page_state().node_mode()
+    } else {
+        NodeKind::Exit
+    }
+}
+
+/// Coerce the stored `node_mode` to the effective mode and return it,
+/// so the per-mode [`crate::app::pages::select_location::PageState`]
+/// accessors (expansion, scroll) operate on the mode actually being
+/// rendered/activated. Callable through `&App` because `node_mode` is a
+/// `Cell`.
+fn sync_effective_mode(app: &App) -> NodeKind {
+    let mode = effective_mode(app);
+    app.select_location_page_state().set_node_mode(mode);
+    mode
+}
+
+/// The current daemon selection for `mode` (entry vs exit).
+fn current_selection_for_mode(app: &App, mode: NodeKind) -> CurrentRelaySelection<'_> {
+    match mode {
+        NodeKind::Entry => app.current_entry_relay_selection(),
+        NodeKind::Exit => app.current_relay_selection(),
+    }
 }
 
 /// Run the action bound to a focused Select-location widget. Static
@@ -147,6 +188,27 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
         app.enter_sub_page(crate::app::PageId::SelectLocationFilter);
         return;
     }
+    // Entry/Exit tab: switch which node the page edits, then land focus
+    // on that node's current selection (or the tab itself when there's
+    // nothing to focus, e.g. the entry list is hidden because DAITA is
+    // overriding the entry).
+    if widget == widgets::ENTRY_TAB || widget == widgets::EXIT_TAB {
+        let mode = if widget == widgets::ENTRY_TAB {
+            NodeKind::Entry
+        } else {
+            NodeKind::Exit
+        };
+        app.select_location_page_state().set_node_mode(mode);
+        if !focus_current_selection(app, mode) {
+            app.page_focus_mut().focused = Some(widget);
+        }
+        return;
+    }
+
+    // The node we're editing - exit, or (with multihop on) whichever
+    // tab is active. Syncs the per-mode page state so the tree walks
+    // below read the right expansion sets.
+    let mode = sync_effective_mode(app);
 
     // Per-row focusables: re-project the *filtered* tree to map
     // indices back to (country / city / relay) entities. Must match
@@ -157,11 +219,15 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
     let tree = project_filtered_tree(app);
     let force_expand = filter_active(app);
 
-    // Country radio: select country.
+    // Country radio: select country for the active node (entry or exit).
     if let Some(idx) = country_radio_index(widget) {
         if let Some(country) = tree.get(idx) {
             let code = country.code.to_string();
-            match app.select_relay_country(service, &code).await {
+            let result = match mode {
+                NodeKind::Entry => app.select_entry_relay_country(service, &code).await,
+                NodeKind::Exit => app.select_relay_country(service, &code).await,
+            };
+            match result {
                 Ok(()) => app.leave_sub_page(),
                 Err(error) => {
                     app.show_notification(format_action_error("select country", &error));
@@ -222,7 +288,11 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
         if let Some(&(country_code, _, city_code, ..)) = cities.get(idx) {
             let cc = country_code.to_string();
             let ct = city_code.to_string();
-            match app.select_relay_city(service, &cc, &ct).await {
+            let result = match mode {
+                NodeKind::Entry => app.select_entry_relay_city(service, &cc, &ct).await,
+                NodeKind::Exit => app.select_relay_city(service, &cc, &ct).await,
+            };
+            match result {
                 Ok(()) => app.leave_sub_page(),
                 Err(error) => {
                     app.show_notification(format_action_error("select city", &error));
@@ -286,7 +356,11 @@ pub async fn activate<S: MullvadService>(app: &mut App, service: &S, widget: Wid
         // to take `&mut app` next.
         drop(tree);
         if let Some(host) = host {
-            match app.select_relay(service, &host).await {
+            let result = match mode {
+                NodeKind::Entry => app.select_entry_relay(service, &host).await,
+                NodeKind::Exit => app.select_relay(service, &host).await,
+            };
+            match result {
                 Ok(()) => app.leave_sub_page(),
                 Err(error) => {
                     app.show_notification(format_action_error("select relay", &error));
@@ -335,10 +409,33 @@ enum FocusTarget {
 pub fn enter_with_current_selection_focused(app: &mut App) {
     use crate::app::PageId;
 
+    // The Status `[Switch location]` button is exit-centric, so always
+    // open editing the exit node - even if the page was left on the
+    // Entry tab from a previous visit.
+    app.select_location_page_state()
+        .set_node_mode(NodeKind::Exit);
+
+    // Push the sub-page first so it captures the activating button as
+    // `return_focus`; only after that do we override the focused
+    // widget. Pressing Esc therefore lands the user back on
+    // `[Switch location]`, not on the relay row they were just on.
+    app.enter_sub_page(PageId::SelectLocation);
+    focus_current_selection(app, NodeKind::Exit);
+}
+
+/// Expand the tree onto `mode`'s current daemon selection and focus its
+/// row, centering it on the next frame. Assumes the page's `node_mode`
+/// is already set to `mode` (the per-mode expansion sets are keyed off
+/// it). Returns `true` when it set focus to a selection row, `false`
+/// when there's nothing to focus - the daemon hasn't reported settings
+/// yet (`Unknown`), the constraint is `Any` / a custom list / a custom
+/// tunnel, or the relay list doesn't yet contain the selected entry.
+/// Used both on page open (exit) and after an entry selection flips to
+/// the Exit tab.
+fn focus_current_selection(app: &mut App, mode: NodeKind) -> bool {
     // Snapshot the selection into owned strings before any mutable
-    // borrow of `app` - `current_relay_selection` borrows from the
-    // cached settings.
-    let target: Option<FocusTarget> = match app.current_relay_selection() {
+    // borrow of `app` - the selection borrows from the cached settings.
+    let target: Option<FocusTarget> = match current_selection_for_mode(app, mode) {
         CurrentRelaySelection::Country(c) => Some(FocusTarget::Country(c.to_string())),
         CurrentRelaySelection::City { country, city } => Some(FocusTarget::City {
             country: country.to_string(),
@@ -390,9 +487,6 @@ pub fn enter_with_current_selection_focused(app: &mut App) {
         .as_ref()
         .and_then(|tgt| focus_widget_for_target(app, tgt));
 
-    // Push the sub-page first so it captures the activating button as
-    // `return_focus`; only then override the focused widget.
-    app.enter_sub_page(PageId::SelectLocation);
     if let Some(id) = focus_widget {
         app.page_focus_mut().focused = Some(id);
         // Ask the renderer to center the focused row vertically on
@@ -401,6 +495,9 @@ pub fn enter_with_current_selection_focused(app: &mut App) {
         // visible window matches what the user expects from
         // "open the list on my current selection".
         app.select_location_page_state().request_center_focused();
+        true
+    } else {
+        false
     }
 }
 
@@ -473,9 +570,29 @@ fn focus_widget_for_target(app: &App, target: &FocusTarget) -> Option<WidgetId> 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, registry: &mut FocusRegistry) {
     let area = components::centered_column(area, components::PAGE_COLUMN_WIDTH);
     let focused = app.page_focus().focused;
+    let multihop = app.is_multihop_enabled();
+    // Coerce/read the node being edited and point the per-mode page
+    // state at it before any tree walk reads expansion state.
+    let mode = sync_effective_mode(app);
+
+    // When multihop is on, carve an Entry/Exit tab row above the search
+    // row. With multihop off there's only the exit node, so no tabs.
+    let body = if multihop {
+        let [tab_row, rest] = Layout::vertical([
+            Constraint::Length(1), // Entry/Exit tabs
+            Constraint::Min(0),    // search row + tree
+        ])
+        .areas(area);
+        render_mode_tabs(frame, tab_row, mode, focused, registry);
+        rest
+    } else {
+        area
+    };
+
     let tree = project_filtered_tree(app);
     let force_expand = filter_active(app);
-    let selection = app.current_relay_selection();
+    // Highlight the active node's current selection.
+    let selection = current_selection_for_mode(app, mode);
     let page_state = app.select_location_page_state();
 
     // Top: search anchor (filling) + [Filter] button.
@@ -484,7 +601,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, registry: &mut Focus
         Constraint::Length(1), // search row
         Constraint::Min(0),    // tree body
     ])
-    .areas(area);
+    .areas(body);
 
     render_search_row(frame, search_row, page_state.query(), focused, registry);
 
@@ -1154,6 +1271,78 @@ fn render_relay_row_visual(
     );
 }
 
+/// `[Entry] [Exit]` segmented control shown above the search row when
+/// multihop is enabled. The active node is underlined (matching the
+/// tab-bar's active-tab convention); a focused tab renders yellow. Both
+/// tabs live on one focus row, so ←/→ move between them and ↓ drops to
+/// the search row.
+fn render_mode_tabs(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    active: NodeKind,
+    focused: Option<WidgetId>,
+    registry: &mut FocusRegistry,
+) {
+    const ENTRY: &str = "[Entry]";
+    const EXIT: &str = "[Exit]";
+    const GAP: u16 = 2;
+    let total = ENTRY.len() as u16 + GAP + EXIT.len() as u16;
+    let x = area.x + area.width.saturating_sub(total) / 2;
+    let row = Rect::new(x, area.y, total.min(area.width), area.height.min(1));
+    let [entry_area, _gap, exit_area] = Layout::horizontal([
+        Constraint::Length(ENTRY.len() as u16),
+        Constraint::Length(GAP),
+        Constraint::Length(EXIT.len() as u16),
+    ])
+    .areas(row);
+    render_mode_tab(
+        frame,
+        entry_area,
+        ENTRY,
+        widgets::ENTRY_TAB,
+        matches!(active, NodeKind::Entry),
+        focused,
+        registry,
+    );
+    render_mode_tab(
+        frame,
+        exit_area,
+        EXIT,
+        widgets::EXIT_TAB,
+        matches!(active, NodeKind::Exit),
+        focused,
+        registry,
+    );
+    registry.end_row();
+}
+
+/// One `[Entry]`/`[Exit]` tab cell: underlined when it's the active
+/// node, yellow when focused, registered as a focusable button.
+fn render_mode_tab(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    id: WidgetId,
+    active: bool,
+    focused: Option<WidgetId>,
+    registry: &mut FocusRegistry,
+) {
+    let mut style = if focused == Some(id) {
+        Style::new().yellow()
+    } else {
+        Style::new()
+    };
+    if active {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    frame.render_widget(Paragraph::new(label).style(style), area);
+    registry.register(FocusableWidget {
+        id,
+        rect: area,
+        kind: FocusKind::Button,
+    });
+}
+
 /// Search-anchor + filter-button row. The anchor is a focusable
 /// styled like a black input field with placeholder text, mirroring
 /// `logs.html`'s pattern.
@@ -1282,6 +1471,8 @@ mod tests {
     fn owns_widget_recognizes_static_and_dynamic_ids() {
         assert!(owns_widget(widgets::SEARCH_ANCHOR));
         assert!(owns_widget(widgets::FILTER_BUTTON));
+        assert!(owns_widget(widgets::ENTRY_TAB));
+        assert!(owns_widget(widgets::EXIT_TAB));
         assert!(owns_widget(WidgetId(COUNTRY_RADIO_BASE)));
         assert!(owns_widget(WidgetId(RELAY_RADIO_BASE + RELAY_MAX - 1)));
         // Chevron click-target ids sit just past the relay range.
@@ -1318,6 +1509,54 @@ mod tests {
             },
         ]);
         app
+    }
+
+    /// Settings with multihop and an optional DAITA-overrides-entry
+    /// state, for the Entry/Exit render tests. Exit/entry default to
+    /// `se` (the daemon defaults).
+    fn settings_multihop_daita(
+        multihop: bool,
+        daita_overrides_entry: bool,
+    ) -> crate::integration::Settings {
+        use mullvad_types::relay_constraints::{
+            RelayConstraints, RelaySettings, WireguardConstraints,
+        };
+        let mut s = crate::integration::Settings {
+            relay_settings: RelaySettings::Normal(RelayConstraints {
+                wireguard_constraints: WireguardConstraints {
+                    use_multihop: multihop,
+                    ..WireguardConstraints::default()
+                },
+                ..RelayConstraints::default()
+            }),
+            ..crate::integration::Settings::default()
+        };
+        if daita_overrides_entry {
+            // "Direct only" off = `use_multihop_if_necessary` on.
+            s.tunnel_options.wireguard.daita.enabled = true;
+            s.tunnel_options.wireguard.daita.use_multihop_if_necessary = true;
+        }
+        s
+    }
+
+    #[test]
+    fn entry_exit_tabs_render_only_with_multihop() {
+        let mut app = test_app_with_relays();
+
+        let lines = render_screen(&app, 50, 20);
+        assert!(
+            !lines.iter().any(|l| l.contains("[Entry]")),
+            "no Entry/Exit tabs when multihop is off",
+        );
+
+        app.set_settings(settings_multihop_daita(true, false));
+        let lines = render_screen(&app, 50, 20);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("[Entry]") && l.contains("[Exit]")),
+            "Entry/Exit tabs appear when multihop is on",
+        );
     }
 
     #[test]

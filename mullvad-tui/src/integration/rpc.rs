@@ -342,6 +342,36 @@ impl MullvadService for RpcMullvadService {
         .await
     }
 
+    async fn set_entry_location(&self, location: &str) -> Result<(), IntegrationError> {
+        self.with_client(async |client| {
+            let geo = resolve_active_hostname(client, location).await?;
+            write_entry_location(client, geo).await
+        })
+        .await
+    }
+
+    async fn set_entry_country(&self, country_code: &str) -> Result<(), IntegrationError> {
+        self.with_client(async |client| {
+            write_entry_location(client, GeographicLocationConstraint::country(country_code)).await
+        })
+        .await
+    }
+
+    async fn set_entry_city(
+        &self,
+        country_code: &str,
+        city_code: &str,
+    ) -> Result<(), IntegrationError> {
+        self.with_client(async |client| {
+            write_entry_location(
+                client,
+                GeographicLocationConstraint::city(country_code, city_code),
+            )
+            .await
+        })
+        .await
+    }
+
     async fn set_multihop_enabled(&self, enabled: bool) -> Result<(), IntegrationError> {
         self.with_client(async |client| {
             let mut constraints = current_normal_constraints(client).await?;
@@ -569,8 +599,9 @@ impl MullvadService for RpcMullvadService {
 
 /// Look up an active relay by hostname (case-insensitive) and return the
 /// fully-qualified `GeographicLocationConstraint::Hostname(country, city, host)`
-/// that points at it. Used by `set_relay_location` and
-/// `set_relay_entry_location` so the two share a single resolution path.
+/// that points at it. Used by `set_relay_location` and `set_entry_location`
+/// so the exit and multihop-entry hostname flows share a single resolution
+/// path.
 async fn resolve_active_hostname(
     client: &mut TolerantClient,
     hostname: &str,
@@ -605,6 +636,23 @@ async fn write_location(
 ) -> Result<(), IntegrationError> {
     let mut constraints = current_normal_constraints(client).await?;
     constraints.location = Constraint::Only(LocationConstraint::Location(geo));
+    client
+        .set_relay_settings(RelaySettings::Normal(constraints))
+        .await?;
+    Ok(())
+}
+
+/// Multihop entry node sibling of [`write_location`]: fetch the current
+/// normal `RelayConstraints`, replace `wireguard_constraints.entry_location`
+/// with `geo`, and push the whole settings back. Shared by the three entry
+/// setters (location/country/city). Leaves the exit `location` untouched.
+async fn write_entry_location(
+    client: &mut TolerantClient,
+    geo: GeographicLocationConstraint,
+) -> Result<(), IntegrationError> {
+    let mut constraints = current_normal_constraints(client).await?;
+    constraints.wireguard_constraints.entry_location =
+        Constraint::Only(LocationConstraint::Location(geo));
     client
         .set_relay_settings(RelaySettings::Normal(constraints))
         .await?;

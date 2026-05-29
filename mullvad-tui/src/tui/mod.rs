@@ -1847,6 +1847,113 @@ mod tests {
         );
     }
 
+    /// `Settings` with multihop `enabled`, exit pinned to `se` and entry
+    /// to `se` (the daemon defaults) - for the Entry/Exit dispatch tests
+    /// alongside [`open_select_location_with_relays`].
+    fn multihop_settings(enabled: bool) -> crate::integration::Settings {
+        use mullvad_types::{
+            constraints::Constraint,
+            relay_constraints::{
+                GeographicLocationConstraint, LocationConstraint, RelayConstraints, RelaySettings,
+                WireguardConstraints,
+            },
+        };
+        let se = || {
+            Constraint::Only(LocationConstraint::Location(
+                GeographicLocationConstraint::Country("se".to_string()),
+            ))
+        };
+        crate::integration::Settings {
+            relay_settings: RelaySettings::Normal(RelayConstraints {
+                location: se(),
+                wireguard_constraints: WireguardConstraints {
+                    use_multihop: enabled,
+                    entry_location: se(),
+                    ..WireguardConstraints::default()
+                },
+                ..RelayConstraints::default()
+            }),
+            ..crate::integration::Settings::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn selecting_in_entry_mode_writes_entry_location() {
+        use crate::app::pages::select_location::NodeKind;
+
+        let mut app = app();
+        let service = StubService::default();
+        open_select_location_with_relays(&mut app);
+        app.set_settings(multihop_settings(true));
+        app.select_location_page_state()
+            .set_node_mode(NodeKind::Entry);
+
+        // `us` is country idx 1 (alphabetical by code: se, us).
+        let us_radio = crate::app::WidgetId(pages::select_location::COUNTRY_RADIO_BASE + 1);
+        pages::select_location::activate(&mut app, &service, us_radio).await;
+
+        assert_eq!(
+            service.set_entry_country_calls.borrow().as_slice(),
+            &["us".to_string()],
+            "entry mode writes the entry-location setter",
+        );
+        assert!(
+            service.set_relay_country_calls.borrow().is_empty(),
+            "the exit setter must not fire in entry mode",
+        );
+        assert!(
+            !app.is_on_sub_page(),
+            "selecting a node closes the sub-page"
+        );
+    }
+
+    #[tokio::test]
+    async fn selecting_in_exit_mode_writes_exit_location_under_multihop() {
+        use crate::app::pages::select_location::NodeKind;
+
+        let mut app = app();
+        let service = StubService::default();
+        open_select_location_with_relays(&mut app);
+        app.set_settings(multihop_settings(true));
+        app.select_location_page_state()
+            .set_node_mode(NodeKind::Exit);
+
+        // Entry is `se`; pick `us` as the exit to dodge cross-exclusion.
+        let us_radio = crate::app::WidgetId(pages::select_location::COUNTRY_RADIO_BASE + 1);
+        pages::select_location::activate(&mut app, &service, us_radio).await;
+
+        assert_eq!(
+            service.set_relay_country_calls.borrow().as_slice(),
+            &["us".to_string()],
+        );
+        assert!(service.set_entry_country_calls.borrow().is_empty());
+        assert!(!app.is_on_sub_page(), "an exit selection closes the page");
+    }
+
+    #[tokio::test]
+    async fn entry_mode_without_multihop_falls_back_to_exit_setter() {
+        use crate::app::pages::select_location::NodeKind;
+
+        let mut app = app();
+        let service = StubService::default();
+        open_select_location_with_relays(&mut app);
+        // Multihop OFF, but node_mode left on Entry from a prior visit.
+        app.set_settings(multihop_settings(false));
+        app.select_location_page_state()
+            .set_node_mode(NodeKind::Entry);
+
+        let se_radio = crate::app::WidgetId(pages::select_location::COUNTRY_RADIO_BASE);
+        pages::select_location::activate(&mut app, &service, se_radio).await;
+
+        // Effective mode is Exit (multihop off), so the exit setter
+        // fires and the cross-exclusion guard is inert.
+        assert_eq!(
+            service.set_relay_country_calls.borrow().as_slice(),
+            &["se".to_string()],
+        );
+        assert!(service.set_entry_country_calls.borrow().is_empty());
+    }
+
     #[tokio::test]
     async fn app_version_info_changed_stores_pushed_value() {
         let mut app = app();
