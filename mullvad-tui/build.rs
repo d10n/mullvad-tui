@@ -20,6 +20,12 @@
 //!    references with `#[cfg(daemon_has_<flag>)]`.
 //! 3. The byte-level test fixture (`settings_2026_2_shape`) should set the new field to `None`
 //!    under the `cfg`, so it matches the pre-feature wire shape.
+//!
+//! Besides proto fields, one Rust-source skew is sniffed the same way: the
+//! access-method `Id` type is `Clone`-not-`Copy` on stable but `Copy` on
+//! tip-of-`main`. The emitted `access_method_id_is_copy` cfg lets call sites
+//! scope a `#[expect(clippy::clone_on_copy)]` to only the pin where that
+//! lint actually fires.
 
 use std::path::PathBuf;
 
@@ -64,9 +70,83 @@ fn main() {
         return;
     };
 
+    // Match only against the code portion of each line (everything before
+    // the first `//`, see `code_of`). A commented-out field declaration -
+    // e.g. `// AccessMethodSetting domain_fronting = 5;` on a pin where the
+    // feature is staged in the proto but not yet landed - is byte-identical
+    // to the real declaration apart from the leading `//`, so a raw
+    // whole-file substring search would false-positive on it and gate in
+    // references to a proto field prost never generated.
     for (flag, marker) in features {
-        if proto.contains(marker) {
+        if proto.lines().any(|line| code_of(line).contains(marker)) {
             println!("cargo:rustc-cfg={flag}");
         }
     }
+
+    // The access-method `Id` type is a Rust-source (not proto) skew:
+    // `Clone`-not-`Copy` on stable `mullvadvpn-app`, but restructured into
+    // `mullvad-types/src/access_method/id.rs` deriving `Copy` on
+    // tip-of-`main`. Call sites that must keep an `Id` binding alive across
+    // a by-value use `.clone()` it - load-bearing on stable, but
+    // `clippy::clone_on_copy` on `main`. Emit a cfg so those sites can scope
+    // `#[cfg_attr(access_method_id_is_copy, expect(clippy::clone_on_copy))]`
+    // to only the pin where the lint fires; a bare `#[expect]` would itself
+    // warn (`unfulfilled_lint_expectations`) on stable, where it stays silent.
+    println!("cargo:rustc-check-cfg=cfg(access_method_id_is_copy)");
+    let mullvad_types_src = manifest_dir
+        .join("..")
+        .join("mullvadvpn-app")
+        .join("mullvad-types")
+        .join("src");
+    // `main` split the type into `access_method/id.rs`; stable keeps it
+    // inline in `access_method.rs`. Check both so the flag tracks the `Id`
+    // derive wherever the type currently lives.
+    let id_files = [
+        mullvad_types_src.join("access_method").join("id.rs"),
+        mullvad_types_src.join("access_method.rs"),
+    ];
+    let mut id_is_copy = false;
+    for path in &id_files {
+        println!("cargo:rerun-if-changed={}", path.display());
+        if std::fs::read_to_string(path).is_ok_and(|src| struct_id_derives_copy(&src)) {
+            id_is_copy = true;
+        }
+    }
+    if id_is_copy {
+        println!("cargo:rustc-cfg=access_method_id_is_copy");
+    }
+}
+
+/// The code portion of a source line: everything before the first `//`
+/// line comment. Both the proto marker search and the `Id`-derive sniff
+/// match against this so a commented-out declaration never counts.
+fn code_of(line: &str) -> &str {
+    line.split_once("//").map_or(line, |(before, _)| before)
+}
+
+/// True if `src` declares a tuple struct `Id` whose immediately-preceding
+/// `#[derive(...)]` includes `Copy`. Rust requires the derive to sit
+/// directly above the item (attributes and comments may interleave, but
+/// any other code line ends the run), so the derive still attached when
+/// `struct Id(` is reached is the one that applies to it.
+fn struct_id_derives_copy(src: &str) -> bool {
+    let mut derive_has_copy = false;
+    for line in src.lines() {
+        let code = code_of(line);
+        let trimmed = code.trim_start();
+        if trimmed.is_empty() {
+            // Blank or comment-only line: keep any pending derive attached.
+            continue;
+        }
+        if trimmed.starts_with("pub struct Id(") || trimmed.starts_with("struct Id(") {
+            return derive_has_copy;
+        }
+        if trimmed.starts_with("#[derive(") {
+            derive_has_copy = code.contains("Copy");
+        } else if !trimmed.starts_with("#[") {
+            // A non-attribute code line (e.g. another struct) ends the run.
+            derive_has_copy = false;
+        }
+    }
+    false
 }

@@ -515,7 +515,12 @@ impl App {
         id: AccessMethodId,
     ) -> Result<(), IntegrationError> {
         self.run_operation(Operation::SetActiveAccessMethod, async |app| {
-            service.set_access_method(id.clone()).await?;
+            // `run_operation` is `AsyncFnOnce` and `id` is not used again,
+            // so move it in rather than clone. `AccessMethodId` is `Copy`
+            // on tip-of-`main` (where a clone here would trip
+            // `clippy::clone_on_copy`) and `Clone`-not-`Copy` on stable; a
+            // move compiles cleanly on both.
+            service.set_access_method(id).await?;
             let setting = service.get_current_api_access_method().await?;
             app.current_api_access_id = Some(setting.get_id());
             Ok(())

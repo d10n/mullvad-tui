@@ -1190,6 +1190,13 @@ mod tests {
         *service.full_settings.borrow_mut() = seeded;
         app.refresh_full_settings(&service).await.unwrap();
 
+        // `direct_id` is reused by the assert below, so it must outlive this
+        // call. `AccessMethodId` is `Clone`-not-`Copy` on the stable
+        // `mullvadvpn-app` pin (clone required) and `Copy` on tip-of-`main`
+        // (where `clippy::clone_on_copy` flags it). The cfg (set by
+        // `build.rs`) scopes the `expect` to the `main` pin where the lint
+        // fires; on stable it stays silent and the same source builds clean.
+        #[cfg_attr(access_method_id_is_copy, expect(clippy::clone_on_copy))]
         app.toggle_access_method(&service, direct_id.clone())
             .await
             .expect("toggle ok");

@@ -545,6 +545,15 @@ impl MullvadService for RpcMullvadService {
 
     async fn set_access_method(&self, id: AccessMethodId) -> Result<(), IntegrationError> {
         self.with_client(async |client| {
+            // `with_client` may invoke this closure twice (initial call plus
+            // one transport-error retry), so the captured `id` must survive
+            // the first call - hence the clone rather than a move. On the
+            // stable `mullvadvpn-app` pin `AccessMethodId` is `Clone`-not-
+            // `Copy`, so the clone is load-bearing; tip-of-`main` made it
+            // `Copy`, where `clippy::clone_on_copy` then flags it. The cfg
+            // (set by `build.rs`) scopes the `expect` to the `main` pin where
+            // the lint fires; on stable it stays silent and the clone stands.
+            #[cfg_attr(access_method_id_is_copy, expect(clippy::clone_on_copy))]
             client.set_access_method(id.clone()).await?;
             Ok(())
         })
